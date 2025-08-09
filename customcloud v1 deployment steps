@@ -1,0 +1,9 @@
+# Create persistent storage directories
+mkdir -p /data/{traefik/config,traefik/letsencrypt,openresty/config,nextcloud,anythingllm,grafana,n8n,wazuh,postgres,redis}
+
+# Make sure acme.json exists and has correct permissions
+touch /data/traefik/letsencrypt/acme.json
+chmod 600 /data/traefik/letsencrypt/acme.json
+
+# Deploy pod
+podman play kube cloud-pod.yml
