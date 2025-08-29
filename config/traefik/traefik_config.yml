@@ -1,0 +1,42 @@
+api:
+  dashboard: true
+  insecure: false
+
+log:
+  level: "INFO"
+  format: "common"
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+    transport:
+      respondingTimeouts:
+        readTimeout: "30m"
+    http:
+      tls:
+        certResolver: "letsencrypt"
+
+providers:
+  # Pangolin -> Traefik integration
+  http:
+    endpoint: "http://pangolin:3001/api/v1/traefik-config"
+    pollInterval: "5s"
+  # Our own routes for Pangolin UI + (optional) examples
+  file:
+    filename: "/etc/traefik/dynamic_config.yml"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "${ACME_EMAIL}"
+      storage: "/letsencrypt/acme.json"
+      httpChallenge:
+        entryPoint: web
+
+experimental:
+  plugins:
+    badger:
+      moduleName: "github.com/fosrl/badger"
+      version: "v1.2.0"
