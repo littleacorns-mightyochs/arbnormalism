@@ -1,0 +1,47 @@
+# To see the full schema / options: https://docs.digpangolin.com/self-host/advanced/config-file
+# Key bits: server.ports, domains, traefik entrypoints, gerbil, and postgres connection. :contentReference[oaicite:2]{index=2}
+
+app:
+  dashboard_url: "https://proxy.arbnormalism.pw"
+  log_level: "info"
+  save_logs: false
+
+server:
+  # These are Pangolin's internal ports; do not expose them directly.
+  external_port: 3000
+  internal_port: 3001
+  next_port: 3002
+  internal_hostname: "pangolin"
+  trust_proxy: 1
+  # Prefer setting via env SERVER_SECRET (compose supplies it).
+  # If you want to hardcode instead, replace the value below and remove the env.
+  secret: "OVERRIDDEN_BY_ENV"
+
+domains:
+  default:
+    base_domain: "arbnormalism.pw"
+    cert_resolver: "letsencrypt"
+    prefer_wildcard_cert: true
+
+traefik:
+  http_entrypoint: "web"
+  https_entrypoint: "websecure"
+  cert_resolver: "letsencrypt"
+  prefer_wildcard_cert: true
+  # If you add custom middlewares in Traefik dynamic config, list them here to apply to resources:
+  # additional_middlewares: ["badger@plugins"]
+
+gerbil:
+  base_endpoint: "proxy.arbnormalism.pw"
+  start_port: ${GERBIL_START_PORT}
+
+flags:
+  require_email_verification: false
+  disable_signup_without_invite: true
+  disable_user_create_org: true
+  allow_raw_resources: true
+
+# Use PostgreSQL instead of SQLite
+postgres:
+  # Local Postgres; change to your managed DB if you prefer.
+  connection_string: "postgresql://pangolin:change_this_pg_password@pangolin-db:5432/pangolin"
