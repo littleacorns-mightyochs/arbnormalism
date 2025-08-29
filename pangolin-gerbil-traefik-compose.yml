@@ -1,0 +1,119 @@
+version: "3.9"
+
+# ===========================
+# HOW TO USE (READ ME)
+# ===========================
+# 1) Make a project folder and save this as docker-compose.yml
+# 2) Create these local paths (relative to this file):
+#      ./config/pangolin/
+#      ./config/traefik/dynamic/         (will hold pangolin.yml route file)
+#      ./config/letsencrypt/             (create empty acme.json and chmod 600)
+# 3) Replace every 'CHANGE_ME' below (domain & email).
+# 4) Start:
+#      - Docker CLI:  docker compose up -d
+#      - Podman CLI:  podman compose up -d
+#      - Podman Desktop: "Containers" → "Compose" → "Create project" → select folder → Start
+# 5) Open https://pangolin.CHANGE_ME.example.com/auth/initial-setup after DNS is set.
+
+networks:
+  pangonet:
+    name: pangolin
+    driver: bridge
+
+volumes:
+  pangolin-data: {}     # shared cert/dynamic state if you want Pangolin↔Traefik integrations
+  gerbil-config: {}     # stores Gerbil WireGuard key
+  traefik-lets: {}      # persistent ACME cert storage
+
+services:
+  # ==========================================================
+  # PANGOLIN (core)
+  # ==========================================================
+  pangolin:
+    image: fosrl/pangolin:latest
+    container_name: pangolin
+    restart: unless-stopped
+    networks: [pangonet]
+    environment:
+      # CHANGE_ME: set to your public HTTPS URL that Traefik serves
+      - PANGOLIN__PUBLIC_URL=https://pangolin.CHANGE_ME.example.com
+      # Optional: - NODE_ENV=production
+    volumes:
+      # Keep Pangolin’s config persistent & backed up
+      - ./config/pangolin:/app/config
+      # Optional shared state helpers (used by some setups)
+      - pangolin-data:/var/certificates
+      - pangolin-data:/var/dynamic
+    # Pangolin listens on 3001 internally; Traefik will front it on 443.
+    # Do NOT publish ports here; Traefik is your entrypoint.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/api/v1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ==========================================================
+  # TRAEFIK (reverse proxy + HTTPS via ACME)
+  # ==========================================================
+  traefik:
+    image: traefik:v3.1
+    container_name: traefik
+    restart: unless-stopped
+    networks: [pangonet]
+    depends_on:
+      pangolin:
+        condition: service_healthy
+    # Bind 80/443 on host — make sure these are open in firewall/security group.
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    command:
+      # Entry points
+      - --entryPoints.web.address=:80
+      - --entryPoints.websecure.address=:443
+      # File provider (portable across Docker & Podman)
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      # ACME (Let's Encrypt) via HTTP challenge
+      - --certificatesResolvers.letsencrypt.acme.email=admin@CHANGE_ME.example.com   # CHANGE_ME
+      - --certificatesResolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesResolvers.letsencrypt.acme.httpChallenge.entryPoint=web
+      # Optional dashboard (reachable only from inside unless you expose it)
+      - --api.dashboard=true
+      - --log.level=INFO
+    volumes:
+      # Dynamic routes live here (you’ll add pangolin.yml; see example below)
+      - ./config/traefik/dynamic:/etc/traefik/dynamic:ro
+      # ACME cert storage (create acme.json and chmod 600)
+      - ./config/letsencrypt:/letsencrypt
+      # Optional read-only access to shared cert/dynamic from Pangolin
+      - pangolin-data:/var/certificates:ro
+      - pangolin-data:/var/dynamic:ro
+
+  # ==========================================================
+  # GERBIL (user-space WireGuard; used by Pangolin for tunnels)
+  # ==========================================================
+  gerbil:
+    image: fosrl/gerbil:latest
+    container_name: gerbil
+    restart: unless-stopped
+    networks: [pangonet]
+    depends_on:
+      pangolin:
+        condition: service_healthy
+    command:
+      # reachableAt: internal URL for Gerbil’s control endpoint
+      - --reachableAt=http://gerbil:3003
+      # generateAndSaveKeyTo: creates/stores WG key inside volume
+      - --generateAndSaveKeyTo=/var/config/key
+      # remoteConfig: Pangolin API endpoint (container-to-container)
+      - --remoteConfig=http://pangolin:3001/api/v1/
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - gerbil-config:/var/config
+    # WireGuard UDP ports — open in firewall/security group.
+    ports:
+      - "51820:51820/udp"
+      - "21820:21820/udp"
