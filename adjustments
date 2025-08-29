@@ -1,0 +1,339 @@
+Dokploy Cloud already runs Traefik, we’ll not run another Traefik here. Instead, we’ll:
+
+Run Pangolin (Postgres-enabled) + Postgres + Gerbil.
+
+Expose only UDP 51820/21820 on Gerbil for WireGuard tunnels (no 80/443).
+
+Publish Pangolin to the web through Dokploy’s Traefik using Docker labels (cleanest) and a shared external network.
+
+Provide an optional Traefik file-provider config (only if your Dokploy Traefik isn’t watching Docker labels).
+
+Set your domain/email exactly as requested:
+
+proxy.arbnormalism.pw (Pangolin)
+
+ACME/admin email: arbnormal@pm.me
+
+(We’ll add commented example routes for n8n.arbnormalism.pw and cloud.arbnormalism.pw you can use later.)
+
+0) What you need to know (Dokploy + Traefik)
+
+Dokploy’s Traefik usually uses the Docker provider and watches containers on its own network (often named something like dokploy-traefik or traefik_proxy).
+
+For Pangolin to be routed by that Traefik, Pangolin must be attached to the same Docker network and must have Traefik labels.
+
+We’ll make that network external, set via .env as TRAEFIK_NETWORK. You’ll set it to your actual Traefik network name (see step 3).
+
+1) .env (put next to docker-compose.yml)
+# ---- Domain / Email ----
+BASE_DOMAIN=arbnormalism.pw
+PANGOLIN_HOST=proxy.arbnormalism.pw
+ACME_EMAIL=arbnormal@pm.me
+
+# ---- Traefik (Dokploy) ----
+# Set this to the EXACT network name your Dokploy Traefik uses.
+# Find with: docker network ls   (look for the network Traefik is attached to)
+TRAEFIK_NETWORK=traefik_proxy
+TRAEFIK_CERT_RESOLVER=letsencrypt     # match Dokploy's Traefik resolver name
+
+# ---- Secrets (CHANGE THESE) ----
+SERVER_SECRET=change_this_to_a_long_random_string
+POSTGRES_PASSWORD=change_this_pg_password
+
+# ---- Local Postgres for Pangolin ----
+POSTGRES_DB=pangolin
+POSTGRES_USER=pangolin
+POSTGRES_HOST=pangolin-db
+POSTGRES_PORT=5432
+
+# ---- Gerbil / WireGuard ----
+# Host ports that will be published for WG. Adjust if these are in use.
+WG_UDP1=51820
+WG_UDP2=21820
+
+# ---- Images (pin if you want) ----
+PANGOLIN_IMAGE=fosrl/pangolin:postgresql-16
+POSTGRES_IMAGE=postgres:16-alpine
+GERBIL_IMAGE=fosrl/gerbil:latest
+
+2) docker-compose.yml
+version: "3.9"
+
+networks:
+  pangolin:
+    name: pangolin
+    driver: bridge
+  # IMPORTANT: This must exist already and be the network Dokploy's Traefik is on.
+  # Set the name via .env -> TRAEFIK_NETWORK
+  traefik_ext:
+    external: true
+    name: ${TRAEFIK_NETWORK}
+
+volumes:
+  pgdata: {}
+  pangolin-data: {}
+  gerbil-config: {}
+
+services:
+  # ---------------------------
+  # Postgres for Pangolin (local)
+  # ---------------------------
+  pangolin-db:
+    image: ${POSTGRES_IMAGE}
+    container_name: pangolin-db
+    restart: unless-stopped
+    networks: [pangolin]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # ---------------------------
+  # Pangolin (PostgreSQL-enabled)
+  # ---------------------------
+  pangolin:
+    image: ${PANGOLIN_IMAGE}
+    container_name: pangolin
+    restart: unless-stopped
+    depends_on:
+      - pangolin-db
+    # Attach to both:
+    #  - internal 'pangolin' network (for DB/Gerbil)
+    #  - external 'traefik_ext' (so Dokploy's Traefik can reach it)
+    networks:
+      - pangolin
+      - traefik_ext
+    environment:
+      # Used by Pangolin internally; we also set the public URL via Traefik host.
+      SERVER_SECRET: ${SERVER_SECRET}
+    volumes:
+      - ./config:/app/config
+      - pangolin-data:/var/certificates
+      - pangolin-data:/var/dynamic
+    # No public ports; Dokploy's Traefik will route via labels below.
+    labels:
+      - "traefik.enable=true"
+      # --- HTTP->HTTPS redirect on :80 ---
+      - "traefik.http.routers.pangolin-redirect.rule=Host(`${PANGOLIN_HOST}`)"
+      - "traefik.http.routers.pangolin-redirect.entrypoints=web"
+      - "traefik.http.routers.pangolin-redirect.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      # --- Next.js dashboard on :443 (port 3002) ---
+      - "traefik.http.routers.pangolin.rule=Host(`${PANGOLIN_HOST}`) && !PathPrefix(`/api/v1`)"
+      - "traefik.http.routers.pangolin.entrypoints=websecure"
+      - "traefik.http.routers.pangolin.tls=true"
+      - "traefik.http.routers.pangolin.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
+      - "traefik.http.routers.pangolin.service=pangolin-next"
+      - "traefik.http.services.pangolin-next.loadbalancer.server.port=3002"
+      # --- API/WebSocket on :443 (port 3000) ---
+      - "traefik.http.routers.pangolin-api.rule=Host(`${PANGOLIN_HOST}`) && PathPrefix(`/api/v1`)"
+      - "traefik.http.routers.pangolin-api.entrypoints=websecure"
+      - "traefik.http.routers.pangolin-api.tls=true"
+      - "traefik.http.routers.pangolin-api.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
+      - "traefik.http.routers.pangolin-api.service=pangolin-api-svc"
+      - "traefik.http.services.pangolin-api-svc.loadbalancer.server.port=3000"
+      # Tell Traefik which network to use to reach this container
+      - "traefik.docker.network=${TRAEFIK_NETWORK}"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/api/v1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------------------------
+  # Gerbil (WireGuard controller)
+  # NOTE: Dokploy's Traefik does not handle UDP; Gerbil publishes UDP directly.
+  # ---------------------------
+  gerbil:
+    image: ${GERBIL_IMAGE}
+    container_name: gerbil
+    restart: unless-stopped
+    depends_on:
+      pangolin:
+        condition: service_healthy
+    networks: [pangolin]
+    command:
+      - --config=/var/config/gerbil.json
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - gerbil-config:/var/config
+    # Open these in your firewall / security group
+    ports:
+      - "${WG_UDP1}:51820/udp"
+      - "${WG_UDP2}:21820/udp"
+
+3) Make (or pick) the external Traefik network
+
+Find Dokploy’s Traefik network name:
+
+docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Networks}}"
+docker network ls
+
+
+You’ll see Traefik’s container and the network it’s on. Put that exact network name into .env as TRAEFIK_NETWORK=....
+
+If you guess wrong here, routing won’t work (Traefik can’t reach the container). Fix is simple: update .env and re-up.
+
+4) Config files
+config/config.yml (Pangolin)
+app:
+  # Public dashboard URL (used for links). This should be your HTTPS host.
+  dashboard_url: "https://${PANGOLIN_HOST}"
+  log_level: "info"
+  save_logs: false
+
+server:
+  # Internal ports. Leave these as-is.
+  external_port: 3000
+  internal_port: 3001
+  next_port: 3002
+  internal_hostname: "pangolin"
+  trust_proxy: 1
+  # Prefer env var; keep this string as a fallback only.
+  secret: "OVERRIDDEN_BY_ENV"
+
+domains:
+  default:
+    base_domain: "${BASE_DOMAIN}"
+    cert_resolver: "${TRAEFIK_CERT_RESOLVER}"
+    prefer_wildcard_cert: true
+
+traefik:
+  http_entrypoint: "web"
+  https_entrypoint: "websecure"
+  cert_resolver: "${TRAEFIK_CERT_RESOLVER}"
+  prefer_wildcard_cert: true
+
+gerbil:
+  base_endpoint: "${PANGOLIN_HOST}"
+  start_port: 51820
+
+flags:
+  require_email_verification: false
+  disable_signup_without_invite: true
+  disable_user_create_org: true
+  allow_raw_resources: true
+
+postgres:
+  connection_string: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+
+
+You’ll provide SERVER_SECRET, POSTGRES_*, and domain values via .env. No plaintext secrets in this file.
+
+config/gerbil/gerbil.json (Gerbil)
+{
+  "reachableAt": "http://gerbil:3003",
+  "generateAndSaveKeyTo": "/var/config/key",
+  "remoteConfig": "http://pangolin:3001/api/v1/"
+}
+
+OPTIONAL: config/traefik/dynamic_config.yml (only if Dokploy Traefik isn’t watching Docker labels)
+
+If for some reason Dokploy’s Traefik doesn’t use the Docker provider for external containers, you can paste this into a Traefik file-provider mounted by Dokploy. Replace the resolver name if Dokploy uses a different one.
+
+http:
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+
+  routers:
+    pangolin-redirect:
+      rule: "Host(`proxy.arbnormalism.pw`)"
+      entryPoints: [web]
+      middlewares: [redirect-to-https]
+      service: pangolin-next
+
+    pangolin:
+      rule: "Host(`proxy.arbnormalism.pw`) && !PathPrefix(`/api/v1`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: pangolin-next
+
+    pangolin-api:
+      rule: "Host(`proxy.arbnormalism.pw`) && PathPrefix(`/api/v1`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: pangolin-api-svc
+
+  services:
+    pangolin-next:
+      loadBalancer:
+        servers:
+          - url: "http://pangolin:3002"
+    pangolin-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://pangolin:3000"
+
+5) (Commented) example routes for later (n8n, Nextcloud)
+
+If you later decide to publish these directly via Traefik labels (instead of via Pangolin Resources), you can add similar labels to those services:
+
+# Example for an n8n service:
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.n8n.rule=Host(`n8n.arbnormalism.pw`)"
+#   - "traefik.http.routers.n8n.entrypoints=websecure"
+#   - "traefik.http.routers.n8n.tls=true"
+#   - "traefik.http.routers.n8n.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
+#   - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+#   - "traefik.docker.network=${TRAEFIK_NETWORK}"
+
+# Example for a Nextcloud service:
+# labels:
+#   - "traefik.enable=true"
+#   - "traefik.http.routers.nextcloud.rule=Host(`cloud.arbnormalism.pw`)"
+#   - "traefik.http.routers.nextcloud.entrypoints=websecure"
+#   - "traefik.http.routers.nextcloud.tls=true"
+#   - "traefik.http.routers.nextcloud.tls.certresolver=${TRAEFIK_CERT_RESOLVER}"
+#   - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
+#   - "traefik.docker.network=${TRAEFIK_NETWORK}"
+
+
+If you deploy n8n/Nextcloud via Dokploy templates, Dokploy will usually add these labels for you. Just make sure those containers also join the same Traefik network.
+
+6) Bring it up
+# 1) Update .env (TRAEFIK_NETWORK, secrets)
+# 2) Ensure the external network exists (it already should if Dokploy is running)
+# 3) Start:
+docker compose --env-file .env up -d
+# or
+podman compose --env-file .env up -d
+
+
+Visit: https://proxy.arbnormalism.pw/auth/initial-setup
+Use arbnormal@pm.me
+ as the admin email during Pangolin’s first-run wizard.
+
+Networking with Dokploy: common pitfalls & fixes
+
+Wrong Traefik network name → 404/No route.
+Fix: set .env TRAEFIK_NETWORK to the exact network name Dokploy’s Traefik uses; re-up.
+
+Traefik not watching Docker provider for outside containers.
+Fix: either enable the Docker provider for all containers (Dokploy setting) or use the file-provider method (paste dynamic_config.yml into Dokploy’s Traefik config).
+
+Another reverse proxy still binding 80/443.
+Your compose doesn’t bind 80/443 — Dokploy should. If ports are taken, check for a second Traefik/Caddy/Nginx.
+
+UDP blocked.
+Open 51820/udp and 21820/udp on your server firewall/security group for Gerbil (WireGuard).
+
+Service not reachable on network.
+Any service you want Traefik to reach must:
+
+listen on 0.0.0.0 inside the container,
+
+join the Traefik network, and
+
+expose the correct internal port via labels.
+
+Cert resolver mismatch.
+If Dokploy’s Traefik uses a resolver name other than letsencrypt, set .env TRAEFIK_CERT_RESOLVER to that name.
