@@ -1,0 +1,83 @@
+http:
+  middlewares:
+    redirect-to-https:
+      redirectScheme:
+        scheme: https
+
+  routers:
+    # Force HTTP->HTTPS for your Pangolin hostname
+    pangolin-redirect:
+      rule: "Host(`proxy.arbnormalism.pw`)"
+      entryPoints: [web]
+      middlewares: [redirect-to-https]
+      service: pangolin-next
+
+    # Pangolin Next.js (dashboard)
+    pangolin-next:
+      rule: "Host(`proxy.arbnormalism.pw`) && !PathPrefix(`/api/v1`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: pangolin-next-svc
+
+    # Pangolin API / WebSocket
+    pangolin-api:
+      rule: "Host(`proxy.arbnormalism.pw`) && PathPrefix(`/api/v1`)"
+      entryPoints: [websecure]
+      tls:
+        certResolver: letsencrypt
+      service: pangolin-api-svc
+
+    # -----------------------------
+    # EXAMPLE: Publish n8n directly (bypass Pangolin)
+    # n8n:
+    #   rule: "Host(`n8n.arbnormalism.pw`)"
+    #   entryPoints: [websecure]
+    #   tls:
+    #     certResolver: letsencrypt
+    #   service: n8n-svc
+
+    # EXAMPLE: Publish Nextcloud directly (bypass Pangolin)
+    # nextcloud:
+    #   rule: "Host(`cloud.arbnormalism.pw`)"
+    #   entryPoints: [websecure]
+    #   tls:
+    #     certResolver: letsencrypt
+    #   service: nextcloud-svc
+
+    # EXAMPLE: Route Dokploy UI (if Dokploy listens on 3000 and shares the network)
+    # dokploy:
+    #   rule: "Host(`dokploy.arbnormalism.pw`)"
+    #   entryPoints: [websecure]
+    #   tls:
+    #     certResolver: letsencrypt
+    #   service: dokploy-svc
+
+  services:
+    pangolin-next-svc:
+      loadBalancer:
+        servers:
+          - url: "http://pangolin:3002"
+    pangolin-api-svc:
+      loadBalancer:
+        servers:
+          - url: "http://pangolin:3000"
+
+    # n8n-svc:
+    #   loadBalancer:
+    #     servers:
+    #       - url: "http://n8n:5678"
+
+    # nextcloud-svc:
+    #   loadBalancer:
+    #     servers:
+    #       - url: "http://nextcloud:80"
+
+    # dokploy-svc:
+    #   loadBalancer:
+    #     servers:
+    #       # If Dokploy runs in its own stack/network, either:
+    #       # 1) attach that container/service to the 'pangolin' network; or
+    #       # 2) point at host-level 127.0.0.1:3000 (not ideal), or
+    #       # 3) create a shared external network both stacks join.
+    #       - url: "http://dokploy:3000"
