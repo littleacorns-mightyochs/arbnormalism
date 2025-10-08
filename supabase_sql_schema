@@ -1,0 +1,27 @@
+## sql database schema for small service business
+
+CREATE TABLE leads (id SERIAL PRIMARY KEY, customer_id INT, contractor_id INT, date_created DATE, status VARCHAR(255), notes TEXT, FOREIGN KEY (customer_id) REFERENCES customers(id), FOREIGN KEY (contractor_id) REFERENCES contractors(id));
+CREATE TABLE customers (id SERIAL PRIMARY KEY, name VARCHAR(255), email VARCHAR(255), phone VARCHAR(20), address TEXT);
+CREATE TABLE contractors (id SERIAL PRIMARY KEY, name VARCHAR(255), email VARCHAR(255), phone VARCHAR(20), specialty VARCHAR(255));
+CREATE TABLE estimates (id SERIAL PRIMARY KEY, lead_id INT, date_created DATE, amount NUMERIC(10, 2), status VARCHAR(255), FOREIGN KEY (lead_id) REFERENCES leads(id));
+CREATE TABLE invoices (id SERIAL PRIMARY KEY, estimate_id INT, date_created DATE, amount NUMERIC(10, 2), status VARCHAR(255), FOREIGN KEY (estimate_id) REFERENCES estimates(id));
+CREATE TABLE payments (id SERIAL PRIMARY KEY, invoice_id INT, date_paid DATE, amount NUMERIC(10, 2), FOREIGN KEY (invoice_id) REFERENCES invoices(id));
+CREATE TABLE jobs (id SERIAL PRIMARY KEY, lead_id INT, estimated_start_date DATE, actual_start_date DATE, estimated_end_date DATE, actual_end_date DATE, status VARCHAR(255), FOREIGN KEY (lead_id) REFERENCES leads(id));
+CREATE TABLE company_assets (id SERIAL PRIMARY KEY, name VARCHAR(255), type VARCHAR(255), purchase_date DATE, purchase_cost NUMERIC(10, 2));
+CREATE TABLE supplies_inventory (id SERIAL PRIMARY KEY, name VARCHAR(255), quantity INT, unit_cost NUMERIC(10, 2));
+CREATE TABLE cash_flow (id SERIAL PRIMARY KEY, type VARCHAR(255), date DATE, amount NUMERIC(10, 2), description TEXT);
+
+
+## seed sql
+
+INSERT INTO leads (customer_id, contractor_id, date_created, status, notes) VALUES (1, 1, '2022-01-01', 'pending', 'Interested in tree removal');
+INSERT INTO customers (name, email, phone, address) VALUES ('John Doe', 'john.doe@example.com', '123-456-7890', '123 Main St, Anytown, USA');
+INSERT INTO contractors (name, email, phone, specialty) VALUES ('Jane Smith', 'jane.smith@example.com', '987-654-3210', 'Tree Trimming');
+INSERT INTO estimates (lead_id, date_created, amount, status) VALUES (1, '2022-01-05', 500, 'pending');
+INSERT INTO invoices (estimate_id, date_created, amount, status) VALUES (1, '2022-01-07', 500, 'pending');
+INSERT INTO payments (invoice_id, date_paid, amount) VALUES (1, '2022-01-10', 500);
+INSERT INTO jobs (lead_id, estimated_start_date, status) VALUES (1, '2022-01-15', 'scheduled');
+INSERT INTO company_assets (name, type, purchase_date, purchase_cost) VALUES ('Tree Climbing Gear', 'Equipment', '2022-01-01', 1000.00);
+INSERT INTO supplies_inventory (name, quantity, unit_cost) VALUES ('Chainsaw Blades', 100, 15.00);
+INSERT INTO cash_flow (type, date, amount, description) VALUES ('income', '2022-01-05', 1000, 'Payment for tree removal services');
+
