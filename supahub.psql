@@ -1,0 +1,84 @@
+### company hub basic operational tables schema
+
+-- Create Clients table first
+create table clients (
+  id bigint primary key generated always as identity,
+  name text,
+  contact_info text
+);
+
+-- Now create the other tables
+-- Create Users table with phone field
+create table users (
+  id bigint primary key generated always as identity,
+  name text,
+  email text unique,
+  role text,
+  phone numeric
+);
+
+-- Create Projects table
+create table projects (
+  id bigint primary key generated always as identity,
+  name text,
+  description text,
+  start_date date,
+  end_date date,
+  client_id bigint references clients (id)
+);
+
+-- Create Tasks table
+create table tasks (
+  id bigint primary key generated always as identity,
+  title text,
+  description text,
+  status text,
+  due_date date,
+  project_id bigint references projects (id),
+  assigned_to bigint references users (id)
+);
+
+-- Create Documents table with is_form field
+create table documents (
+  id bigint primary key generated always as identity,
+  name text,
+  file_path text,
+  task_id bigint references tasks (id),
+  project_id bigint references projects (id),
+  is_form boolean default false
+);
+
+-- Create Invoices table
+create table invoices (
+  id bigint primary key generated always as identity,
+  amount numeric,
+  status text,
+  project_id bigint references projects (id),
+  issued_date date,
+  due_date date
+);
+
+-- Create Notes table
+create table notes (
+  id bigint primary key generated always as identity,
+  content text,
+  task_id bigint references tasks (id),
+  project_id bigint references projects (id)
+);
+
+-- Create Links table
+create table links (
+  id bigint primary key generated always as identity,
+  url text,
+  description text,
+  task_id bigint references tasks (id),
+  project_id bigint references projects (id)
+);
+
+-- Create Forms table
+create table forms (
+  id bigint primary key generated always as identity,
+  name text,
+  description text,
+  file_path text
+);
